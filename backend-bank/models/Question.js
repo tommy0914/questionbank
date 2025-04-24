@@ -1,10 +1,11 @@
-// filepath: /c:/Users/ADMIN/Desktop/question bank/backend-bank/models/Question.js
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const questionSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  content: { type: String, required: true },
-  tags: [String],
+  text: { type: String, required: true },
+  options: { type: [String], required: true },
+  answer: { type: String, required: true },
+  topic: { type: String, required: true },
 });
 
-module.exports = mongoose.model('Question', questionSchema);
+const Question = mongoose.model("Question", questionSchema);
+module.exports = Question;

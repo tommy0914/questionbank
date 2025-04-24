@@ -1,24 +1,41 @@
+require("dotenv").config();
+
 // bankServer.js
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
+const rateLimit = require("express-rate-limit");
+const { body, validationResult } = require("express-validator");
+const fileUpload = require("express-fileupload");
+const mammoth = require("mammoth");
+const xlsx = require("xlsx");
+const fs = require("fs");
+const path = require("path");
 
 // Import Mongoose models.
 const Question = require('./models/question');
 const User = require('./models/User');
 
 const app = express();
-const PORT = 4000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/questionBankDB';
+const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
 // Middleware to parse JSON and enable CORS.
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:5173", // Allow requests from the frontend
+  methods: ["GET", "POST", "PUT", "DELETE"], // Allow specific HTTP methods
+  allowedHeaders: ["Content-Type", "Authorization"], // Allow specific headers
+}));
+
+// Middleware to handle file uploads
+app.use(fileUpload());
 
 // Connect to MongoDB.
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/questionBankDB";
+
 mongoose
   .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("Connected to MongoDB"))
@@ -30,25 +47,25 @@ mongoose
 
 // Verify that the request includes a valid JWT token.
 function verifyToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return res.status(401).json({ error: "No token provided" });
 
-  const token = authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token provided' });
+  const token = authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token provided" });
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Failed to authenticate token' });
-    req.user = decoded;
+    if (err) return res.status(403).json({ error: "Failed to authenticate token" });
+    req.user = decoded; // Attach the decoded user information to the request
     next();
   });
 }
 
 // Require that the authenticated user has an 'admin' role.
 function requireAdmin(req, res, next) {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && req.user.role === "admin") {
     next();
   } else {
-    res.status(403).json({ error: 'Admin role required' });
+    res.status(403).json({ error: "Admin role required" });
   }
 }
 
@@ -56,50 +73,68 @@ function requireAdmin(req, res, next) {
    Authentication Routes
 ================================ */
 
-// Optional: Registration endpoint to create new admin users.
-app.post('/api/bank/auth/register', async (req, res) => {
-  try {
-    const { username, password, role } = req.body;
-    if (!(username && password)) {
-      return res.status(400).json({ error: 'Username and password required' });
-    }
-    // Check if the user already exists.
-    const existingUser = await User.findOne({ username });
-    if (existingUser) return res.status(400).json({ error: 'User already exists' });
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 login attempts per windowMs
+  message: "Too many login attempts. Please try again later.",
+});
 
-    // Hash the password.
+// Optional: Registration endpoint to create new admin users.
+app.post("/api/bank/auth/register", async (req, res) => {
+  const { username, password, role } = req.body;
+
+  try {
+    // Validate input
+    if (!username || !password || !role) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    // Check if the user already exists
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ error: "Username already exists" });
+    }
+
+    // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ username, password: hashedPassword, role: role || 'admin' });
-    await user.save();
-    res.status(201).json({ message: 'User registered successfully' });
+
+    // Save the user to the database
+    const newUser = new User({ username, password: hashedPassword, role });
+    await newUser.save();
+
+    res.status(201).json({ message: "User registered successfully" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during registration' });
+    console.error("Error during registration:", err);
+    res.status(500).json({ error: "Server error during registration" });
   }
 });
 
 // Login endpoint. Returns a JWT token if credentials are valid.
-app.post('/api/bank/auth/login', async (req, res) => {
+app.post("/api/bank/auth/login", async (req, res) => {
+  const { username, password } = req.body;
+
   try {
-    const { username, password } = req.body;
-    if (!(username && password)) {
-      return res.status(400).json({ error: 'Username and password required' });
-    }
     const user = await User.findOne({ username });
-    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid username or password" });
+    }
 
-    const passwordIsValid = await bcrypt.compare(password, user.password);
-    if (!passwordIsValid) return res.status(400).json({ error: 'Invalid credentials' });
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ error: "Invalid username or password" });
+    }
 
+    // Include the user's role in the token
     const token = jwt.sign(
       { id: user._id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '1h' }
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
     );
+
     res.json({ token });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error during login' });
+    console.error("Error during login:", err);
+    res.status(500).json({ error: "Server error during login" });
   }
 });
 
@@ -109,13 +144,17 @@ app.post('/api/bank/auth/login', async (req, res) => {
 
 // GET /api/bank/questions
 // Returns all questions in the bank.
-app.get('/api/bank/questions', async (req, res) => {
+app.get("/api/bank/questions", verifyToken, async (req, res) => {
   try {
-    const questions = await Question.find();
-    res.json(questions);
+    const { page = 1, limit = 10 } = req.query;
+    const questions = await Question.find()
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+    const totalQuestions = await Question.countDocuments();
+    res.status(200).json({ questions, totalQuestions });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error fetching questions' });
+    console.error("Error fetching questions:", err);
+    res.status(500).json({ error: "Failed to fetch questions" });
   }
 });
 
@@ -123,36 +162,21 @@ app.get('/api/bank/questions', async (req, res) => {
 // Create a new question. Admin only.
 app.post('/api/bank/questions', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const { text, options, answer, topic, linkedQuestionIds } = req.body;
-    if (!text || !options || !answer) {
-      return res.status(400).json({ error: "Missing required fields: text, options, or answer" });
+    const { text, options, answer, topic } = req.body;
+
+    // Validate input
+    if (!text || !options || !answer || !topic) {
+      return res.status(400).json({ error: 'All fields are required' });
     }
-    const newQuestion = new Question({
-      text,
-      options,
-      answer,
-      topic: topic || "General",
-      linkedQuestionIds: linkedQuestionIds || []
-    });
-    
+
+    // Save the question to the database
+    const newQuestion = new Question({ text, options, answer, topic });
     await newQuestion.save();
 
-    // Advanced Linking:
-    // Automatically set linkedQuestionIds based on the topic if none provided.
-    if (topic && (!linkedQuestionIds || linkedQuestionIds.length === 0)) {
-      const relatedQuestions = await Question.find({ 
-        topic,
-        _id: { $ne: newQuestion._id }
-      });
-      if (relatedQuestions.length > 0) {
-        newQuestion.linkedQuestionIds = relatedQuestions.map(q => q._id);
-        await newQuestion.save();
-      }
-    }
-    res.status(201).json(newQuestion);
+    res.status(201).json({ message: 'Question added successfully', question: newQuestion });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Error adding question' });
+    res.status(500).json({ error: 'Failed to add question' });
   }
 });
 
@@ -268,10 +292,140 @@ app.get('/api/bank/questions/export', verifyToken, requireAdmin, async (req, res
   }
 });
 
+// Upload .docx file and parse questions
+app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    if (!req.files || !req.files.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const file = req.files.file;
+
+    // Ensure the file is a .docx file
+    if (!file.name.endsWith(".docx")) {
+      return res.status(400).json({ error: "Only .docx files are allowed" });
+    }
+
+    // Parse the .docx file
+    const result = await mammoth.extractRawText({ buffer: file.data });
+    const questionsText = result.value; // Extracted plain text from the .docx file
+
+    // Split the text into individual questions (assuming each question is separated by a newline)
+    const questionsArray = questionsText.split("\n").filter((line) => line.trim() !== "");
+
+    // Save questions to the database
+    const savedQuestions = [];
+    for (const questionText of questionsArray) {
+      const [text, ...optionsAndAnswer] = questionText.split(";");
+      const options = optionsAndAnswer.slice(0, -1);
+      const answer = optionsAndAnswer[optionsAndAnswer.length - 1];
+
+      if (!text || options.length < 2 || !answer) {
+        continue; // Skip invalid questions
+      }
+
+      const newQuestion = new Question({
+        text: text.trim(),
+        options: options.map((opt) => opt.trim()),
+        answer: answer.trim(),
+        topic: "General", // Default topic, can be modified
+      });
+
+      const savedQuestion = await newQuestion.save();
+      savedQuestions.push(savedQuestion);
+    }
+
+    res.status(201).json({
+      message: `${savedQuestions.length} questions added successfully`,
+      questions: savedQuestions,
+    });
+  } catch (err) {
+    console.error("Error uploading questions:", err);
+    res.status(500).json({ error: "Failed to upload questions" });
+  }
+});
+
+// Endpoint to save scores to an Excel file
+app.post("/api/save-score", async (req, res) => {
+  try {
+    const { username, score, totalQuestions } = req.body;
+
+    if (!username || score === undefined || !totalQuestions) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    const filePath = path.join(__dirname, "scores.xlsx");
+    let workbook;
+    let worksheet;
+
+    // Check if the file already exists
+    if (fs.existsSync(filePath)) {
+      // Read the existing workbook
+      workbook = xlsx.readFile(filePath);
+      worksheet = workbook.Sheets["Scores"];
+    } else {
+      // Create a new workbook and worksheet
+      workbook = xlsx.utils.book_new();
+      worksheet = xlsx.utils.aoa_to_sheet([["Username", "Score", "Total Questions"]]); // Add headers
+      xlsx.utils.book_append_sheet(workbook, worksheet, "Scores");
+    }
+
+    // Append the new score to the worksheet
+    const newRow = [username, score, totalQuestions];
+    const sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+    sheetData.push(newRow);
+
+    // Write the updated data back to the worksheet
+    const updatedWorksheet = xlsx.utils.aoa_to_sheet(sheetData);
+    workbook.Sheets["Scores"] = updatedWorksheet;
+
+    // Save the workbook
+    xlsx.writeFile(workbook, filePath);
+
+    res.status(201).json({ message: "Score saved successfully" });
+  } catch (error) {
+    console.error("Error saving score:", error);
+    res.status(500).json({ error: "Failed to save score" });
+  }
+});
+
+// Endpoint to download the scores file
+app.get("/api/download-scores", verifyToken, requireAdmin, (req, res) => {
+  const filePath = path.join(__dirname, "scores.xlsx");
+
+  res.download(filePath, "scores.xlsx", (err) => {
+    if (err) {
+      console.error("Error downloading scores:", err);
+      res.status(500).json({ error: "Failed to download scores" });
+    }
+  });
+});
+
+app.get("/api/scores/history", verifyToken, async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, "scores.xlsx");
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "No scores found" });
+    }
+
+    const workbook = xlsx.readFile(filePath);
+    const worksheet = workbook.Sheets["Scores"];
+    const scores = xlsx.utils.sheet_to_json(worksheet);
+
+    const userScores = scores.filter((score) => score.Username === req.user.username);
+    res.status(200).json(userScores);
+  } catch (err) {
+    console.error("Error fetching score history:", err);
+    res.status(500).json({ error: "Failed to fetch score history" });
+  }
+});
+
 /* ================================
    Start the Server
 ================================ */
 app.listen(PORT, () => {
   console.log(`Question Bank backend is running on http://localhost:${PORT}`);
 });
-console.log(__dirname);
+
+
+module.exports = app; // Export the app for testing purposes
