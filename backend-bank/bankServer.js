@@ -1,3 +1,6 @@
+const userRoutes = require('./routes/userRoutes');
+// ...existing code...
+// ...existing code...
 require("dotenv").config();
 
 // bankServer.js
@@ -13,21 +16,24 @@ const mammoth = require("mammoth");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const path = require("path");
-
+// const userRoutes = require('./routes/userRoutes');
+// app.use('/api/users', userRoutes);
 // Import Mongoose models.
-const Question = require('./models/question');
-const User = require('./models/User');
+const Question = require('../models/Question');
+const User = require('../models/user');
 
 const app = express();
+app.use('/api/users', userRoutes);
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
 // Middleware to parse JSON and enable CORS.
 app.use(express.json());
 app.use(cors({
-  origin: "http://localhost:5173", // Allow requests from the frontend
-  methods: ["GET", "POST", "PUT", "DELETE"], // Allow specific HTTP methods
-  allowedHeaders: ["Content-Type", "Authorization"], // Allow specific headers
+  origin: ["http://localhost:5173", "http://localhost:5174"], // Allow both dev ports
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
 }));
 
 // Middleware to handle file uploads
@@ -81,11 +87,11 @@ const loginLimiter = rateLimit({
 
 // Optional: Registration endpoint to create new admin users.
 app.post("/api/bank/auth/register", async (req, res) => {
-  const { username, password, role } = req.body;
+  const { username, password, role, classId } = req.body;
 
   try {
     // Validate input
-    if (!username || !password || !role) {
+    if (!username || !password || !role || (role === 'user' && !classId)) {
       return res.status(400).json({ error: "All fields are required" });
     }
 
@@ -99,7 +105,7 @@ app.post("/api/bank/auth/register", async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Save the user to the database
-    const newUser = new User({ username, password: hashedPassword, role });
+    const newUser = new User({ username, password: hashedPassword, role, classId: role === 'user' ? classId : undefined });
     await newUser.save();
 
     res.status(201).json({ message: "User registered successfully" });
@@ -127,7 +133,7 @@ app.post("/api/bank/auth/login", async (req, res) => {
     // Include the user's role in the token
     const token = jwt.sign(
       { id: user._id, username: user.username, role: user.role },
-      process.env.JWT_SECRET,
+      JWT_SECRET,
       { expiresIn: "1h" }
     );
 
@@ -146,11 +152,14 @@ app.post("/api/bank/auth/login", async (req, res) => {
 // Returns all questions in the bank.
 app.get("/api/bank/questions", verifyToken, async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
-    const questions = await Question.find()
+    const { page = 1, limit = 10, classId, subjectId } = req.query;
+    let filter = {};
+    if (classId) filter.classId = classId;
+    if (subjectId) filter.subjectId = subjectId;
+    const questions = await Question.find(filter)
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
-    const totalQuestions = await Question.countDocuments();
+    const totalQuestions = await Question.countDocuments(filter);
     res.status(200).json({ questions, totalQuestions });
   } catch (err) {
     console.error("Error fetching questions:", err);
@@ -162,15 +171,15 @@ app.get("/api/bank/questions", verifyToken, async (req, res) => {
 // Create a new question. Admin only.
 app.post('/api/bank/questions', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const { text, options, answer, topic } = req.body;
+    const { text, options, answer, topic, classId, subjectId } = req.body;
 
     // Validate input
-    if (!text || !options || !answer || !topic) {
-      return res.status(400).json({ error: 'All fields are required' });
+    if (!text || !options || !answer || !topic || !classId || !subjectId) {
+      return res.status(400).json({ error: 'All fields are required, including classId and subjectId' });
     }
 
     // Save the question to the database
-    const newQuestion = new Question({ text, options, answer, topic });
+    const newQuestion = new Question({ text, options, answer, topic, classId, subjectId });
     await newQuestion.save();
 
     res.status(201).json({ message: 'Question added successfully', question: newQuestion });
@@ -298,43 +307,53 @@ app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, re
     if (!req.files || !req.files.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
-
     const file = req.files.file;
-
-    // Ensure the file is a .docx file
-    if (!file.name.endsWith(".docx")) {
-      return res.status(400).json({ error: "Only .docx files are allowed" });
+    const allowedExts = [".docx", ".xlsx", ".csv"];
+    const ext = file.name.slice(file.name.lastIndexOf("."));
+    if (!allowedExts.includes(ext)) {
+      return res.status(400).json({ error: "Only .docx, .xlsx, or .csv files are allowed" });
     }
-
-    // Parse the .docx file
-    const result = await mammoth.extractRawText({ buffer: file.data });
-    const questionsText = result.value; // Extracted plain text from the .docx file
-
-    // Split the text into individual questions (assuming each question is separated by a newline)
-    const questionsArray = questionsText.split("\n").filter((line) => line.trim() !== "");
-
+    let questionsArray = [];
+    if (ext === ".docx") {
+      // Parse the .docx file (legacy support)
+      const result = await mammoth.extractRawText({ buffer: file.data });
+      const questionsText = result.value;
+      questionsArray = questionsText.split("\n").filter((line) => line.trim() !== "").map((line) => {
+        const [text, ...optionsAndAnswer] = line.split(";");
+        const options = optionsAndAnswer.slice(0, -1);
+        const answer = optionsAndAnswer[optionsAndAnswer.length - 1];
+        return { text, options, answer, topic: "General" };
+      });
+    } else if (ext === ".xlsx" || ext === ".csv") {
+      // Parse Excel or CSV
+      const workbook = xlsx.read(file.data, { type: "buffer" });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const rows = xlsx.utils.sheet_to_json(worksheet, { defval: "" });
+      questionsArray = rows.map((row) => ({
+        text: row.text || row.Question || row.question || "",
+        options: [row.option1, row.option2, row.option3, row.option4].filter(Boolean),
+        answer: row.answer || row.Answer || "",
+        topic: row.topic || row.Topic || "General",
+        classId: row.classId || row.class_id || row.ClassId || row.ClassID || row.class || ""
+      }));
+    }
     // Save questions to the database
     const savedQuestions = [];
-    for (const questionText of questionsArray) {
-      const [text, ...optionsAndAnswer] = questionText.split(";");
-      const options = optionsAndAnswer.slice(0, -1);
-      const answer = optionsAndAnswer[optionsAndAnswer.length - 1];
-
-      if (!text || options.length < 2 || !answer) {
-        continue; // Skip invalid questions
+    for (const q of questionsArray) {
+      if (!q.text || !q.options || q.options.length < 2 || !q.answer || !q.classId) {
+        continue; // Skip invalid
       }
-
       const newQuestion = new Question({
-        text: text.trim(),
-        options: options.map((opt) => opt.trim()),
-        answer: answer.trim(),
-        topic: "General", // Default topic, can be modified
+        text: q.text.trim(),
+        options: q.options.map((opt) => opt.trim()),
+        answer: q.answer.trim(),
+        topic: q.topic ? q.topic.trim() : "General",
+        classId: q.classId
       });
-
       const savedQuestion = await newQuestion.save();
       savedQuestions.push(savedQuestion);
     }
-
     res.status(201).json({
       message: `${savedQuestions.length} questions added successfully`,
       questions: savedQuestions,
@@ -419,6 +438,15 @@ app.get("/api/scores/history", verifyToken, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch score history" });
   }
 });
+
+
+// Class Routes
+const classRoutes = require("./routes/classRoutes");
+app.use("/api/classes", classRoutes);
+
+// Subject Routes
+const subjectRoutes = require("./routes/subjectRoutes");
+app.use("/api/subjects", subjectRoutes);
 
 /* ================================
    Start the Server
