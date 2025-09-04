@@ -1,10 +1,26 @@
 
 const express = require("express");
 const router = express.Router();
-const Class = require("../../models/Class");
+const Class = require("../models/Class");
 const { verifyToken, requireAdmin } = require("../middleware/authMiddleware");
-const Subject = require('../../models/Subject');
-const Question = require('../../models/Question');
+const Subject = require('../models/Subject');
+const Question = require('../models/Question');
+
+// Update a class by ID
+router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const { name, timeLimit } = req.body;
+    const updatedClass = await Class.findByIdAndUpdate(
+      req.params.id,
+      { name, timeLimit },
+      { new: true }
+    );
+    if (!updatedClass) return res.status(404).json({ error: 'Class not found' });
+    res.json({ message: 'Class updated', class: updatedClass });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update class' });
+  }
+});
 
 // Delete a class by ID (cascade delete subjects and questions)
 router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {

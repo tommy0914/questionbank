@@ -1,9 +1,22 @@
-const userRoutes = require('./routes/userRoutes');
-// ...existing code...
-// ...existing code...
-require("dotenv").config();
 
-// bankServer.js
+// ...existing code...
+
+
+// Serve React build folder in production (after all require statements and after app is initialized)
+
+
+// ...existing code...
+
+// Place this after app is initialized and middleware is set up
+// Simple test endpoint to confirm backend is running
+// (Moved here to avoid ReferenceError)
+
+// ...existing code...
+
+
+// Place this after all middleware and route definitions and before app.listen
+// app.get('/api/ping', (req, res) => {
+//   res.json({ message: 'pong' });
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -16,40 +29,43 @@ const mammoth = require("mammoth");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const path = require("path");
-// const userRoutes = require('./routes/userRoutes');
-// app.use('/api/users', userRoutes);
-// Import Mongoose models.
-const Question = require('../models/Question');
-const User = require('../models/user');
+const Question = require('./models/Question');
+const User = require('./models/user');
+
+// Load environment variables first
+require("dotenv").config();
+
+// Define constants after loading env vars
+const PORT = process.env.PORT || 4000;
+const JWT_SECRET = process.env.JWT_SECRET || "fallback_secret_key";
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/question-bank";
 
 const app = express();
-app.use('/api/users', userRoutes);
-const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
-
-// Middleware to parse JSON and enable CORS.
-app.use(express.json());
+// Enable CORS as the very first middleware
 app.use(cors({
-  origin: ["http://localhost:5173", "http://localhost:5174"], // Allow both dev ports
+  origin: true, // Allow all origins for development (including all localhost ports)
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
-
-// Middleware to handle file uploads
+app.use(express.json());
 app.use(fileUpload());
 
-// Connect to MongoDB.
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/questionBankDB";
+// Serve React build folder in production (after all require statements and after app is initialized)
+const frontendBuildPath = path.join(__dirname, '../question-bank-frontend/project_name/dist');
+app.use(express.static(frontendBuildPath));
+// For any non-API route, serve index.html (for React Router)
+app.get(/^((?!\/api\/).)*$/, (req, res) => {
+  res.sendFile(path.join(frontendBuildPath, 'index.html'));
+});
 
-mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => console.error("MongoDB connection error:", err));
+const userRoutes = require('./routes/userRoutes');
+app.use('/api/users', userRoutes);
 
-/* ================================
-   Authentication Middlewares
-================================ */
+// Connect to MongoDB
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
 // Verify that the request includes a valid JWT token.
 function verifyToken(req, res, next) {
@@ -345,10 +361,10 @@ app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, re
         continue; // Skip invalid
       }
       const newQuestion = new Question({
-        text: q.text.trim(),
-        options: q.options.map((opt) => opt.trim()),
-        answer: q.answer.trim(),
-        topic: q.topic ? q.topic.trim() : "General",
+        text: typeof q.text === 'string' ? q.text.trim() : String(q.text || '').trim(),
+        options: q.options.map((opt) => (typeof opt === 'string' ? opt.trim() : String(opt || '').trim())),
+        answer: typeof q.answer === 'string' ? q.answer.trim() : String(q.answer || '').trim(),
+        topic: q.topic ? (typeof q.topic === 'string' ? q.topic.trim() : String(q.topic).trim()) : "General",
         classId: q.classId
       });
       const savedQuestion = await newQuestion.save();
@@ -367,10 +383,10 @@ app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, re
 // Endpoint to save scores to an Excel file
 app.post("/api/save-score", async (req, res) => {
   try {
-    const { username, score, totalQuestions } = req.body;
+    const { username, score, totalQuestions, classId, subjectId, subjectName, className, timeTaken } = req.body;
 
     if (!username || score === undefined || !totalQuestions) {
-      return res.status(400).json({ error: "All fields are required" });
+      return res.status(400).json({ error: "Username, score, and totalQuestions are required" });
     }
 
     const filePath = path.join(__dirname, "scores.xlsx");
@@ -385,12 +401,33 @@ app.post("/api/save-score", async (req, res) => {
     } else {
       // Create a new workbook and worksheet
       workbook = xlsx.utils.book_new();
-      worksheet = xlsx.utils.aoa_to_sheet([["Username", "Score", "Total Questions"]]); // Add headers
+      worksheet = xlsx.utils.aoa_to_sheet([[
+        "Username", "Score", "Total Questions", "Percentage", "Class", "Subject", 
+        "Class ID", "Subject ID", "Time Taken (mins)", "Date", "Status"
+      ]]); // Add enhanced headers
       xlsx.utils.book_append_sheet(workbook, worksheet, "Scores");
     }
 
+    // Calculate percentage and status
+    const percentage = ((score / totalQuestions) * 100).toFixed(2);
+    const status = percentage >= 70 ? "Pass" : "Fail"; // 70% pass mark
+    const testDate = new Date().toLocaleDateString();
+    const timeInMinutes = timeTaken ? Math.round(timeTaken / 60) : "N/A";
+
     // Append the new score to the worksheet
-    const newRow = [username, score, totalQuestions];
+    const newRow = [
+      username, 
+      score, 
+      totalQuestions, 
+      percentage + "%",
+      className || "N/A",
+      subjectName || "N/A",
+      classId || "N/A",
+      subjectId || "N/A",
+      timeInMinutes,
+      testDate,
+      status
+    ];
     const sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
     sheetData.push(newRow);
 
@@ -401,7 +438,15 @@ app.post("/api/save-score", async (req, res) => {
     // Save the workbook
     xlsx.writeFile(workbook, filePath);
 
-    res.status(201).json({ message: "Score saved successfully" });
+    res.status(201).json({ 
+      message: "Score saved successfully", 
+      scoreData: {
+        score,
+        totalQuestions,
+        percentage,
+        status
+      }
+    });
   } catch (error) {
     console.error("Error saving score:", error);
     res.status(500).json({ error: "Failed to save score" });
@@ -439,6 +484,153 @@ app.get("/api/scores/history", verifyToken, async (req, res) => {
   }
 });
 
+// Get scores by subject (Admin only)
+app.get("/api/scores/by-subject/:subjectId", verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, "scores.xlsx");
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "No scores found" });
+    }
+
+    const workbook = xlsx.readFile(filePath);
+    const worksheet = workbook.Sheets["Scores"];
+    const scores = xlsx.utils.sheet_to_json(worksheet);
+
+    const getSubjectId = (s) => s["Subject ID"] || s["__EMPTY_4"];
+    const getPercent = (s) => {
+      const val = s["Percentage"] || s["__EMPTY"] || 0;
+      const num = parseFloat(String(val).replace('%',''));
+      return isNaN(num) ? 0 : num;
+    };
+
+    const subjectScores = scores.filter((s) => getSubjectId(s) === req.params.subjectId);
+    
+    // Calculate analytics
+    const analytics = {
+      totalStudents: subjectScores.length,
+      averageScore: subjectScores.length > 0 
+        ? (subjectScores.reduce((sum, s) => sum + getPercent(s), 0) / subjectScores.length).toFixed(2)
+        : 0,
+      passCount: subjectScores.filter(s => (s.Status || s["__EMPTY_7"]) === "Pass").length,
+      failCount: subjectScores.filter(s => (s.Status || s["__EMPTY_7"]) === "Fail").length,
+      scores: subjectScores
+    };
+
+    res.status(200).json(analytics);
+  } catch (err) {
+    console.error("Error fetching subject scores:", err);
+    res.status(500).json({ error: "Failed to fetch subject scores" });
+  }
+});
+
+// Get scores by class (Admin only)
+app.get("/api/scores/by-class/:classId", verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, "scores.xlsx");
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "No scores found" });
+    }
+
+    const workbook = xlsx.readFile(filePath);
+    const worksheet = workbook.Sheets["Scores"];
+    const scores = xlsx.utils.sheet_to_json(worksheet);
+
+    const getClassId = (s) => s["Class ID"] || s["__EMPTY_3"];
+    const getSubjectId = (s) => s["Subject ID"] || s["__EMPTY_4"];
+    const getSubjectName = (s) => s["Subject"] || s["__EMPTY_2"] || "";
+    const getPercent = (s) => {
+      const val = s["Percentage"] || s["__EMPTY"] || 0;
+      const num = parseFloat(String(val).replace('%',''));
+      return isNaN(num) ? 0 : num;
+    };
+
+    const classScores = scores.filter((s) => getClassId(s) === req.params.classId);
+    
+    // Group by subjects
+    const subjectGroups = {};
+    classScores.forEach(s => {
+      const subjectId = getSubjectId(s);
+      const subjectName = getSubjectName(s);
+      if (!subjectGroups[subjectId]) {
+        subjectGroups[subjectId] = {
+          subjectId,
+          subjectName,
+          scores: [],
+          totalStudents: 0,
+          averageScore: 0,
+          passCount: 0,
+          failCount: 0
+        };
+      }
+      subjectGroups[subjectId].scores.push(s);
+    });
+    
+    // Calculate analytics for each subject
+    Object.values(subjectGroups).forEach(group => {
+      group.totalStudents = group.scores.length;
+      group.averageScore = group.scores.length > 0 
+        ? (group.scores.reduce((sum, s) => sum + getPercent(s), 0) / group.scores.length).toFixed(2)
+        : 0;
+      group.passCount = group.scores.filter(s => (s.Status || s["__EMPTY_7"]) === "Pass").length;
+      group.failCount = group.scores.filter(s => (s.Status || s["__EMPTY_7"]) === "Fail").length;
+    });
+
+    const analytics = {
+      classId: req.params.classId,
+      totalStudents: classScores.length,
+      subjectBreakdown: Object.values(subjectGroups),
+      overallAverage: classScores.length > 0 
+        ? (classScores.reduce((sum, s) => sum + getPercent(s), 0) / classScores.length).toFixed(2)
+        : 0,
+      overallPassCount: classScores.filter(s => (s.Status || s["__EMPTY_7"]) === "Pass").length,
+      overallFailCount: classScores.filter(s => (s.Status || s["__EMPTY_7"]) === "Fail").length
+    };
+
+    res.status(200).json(analytics);
+  } catch (err) {
+    console.error("Error fetching class scores:", err);
+    res.status(500).json({ error: "Failed to fetch class scores" });
+  }
+});
+
+// Get all scores with analytics (Admin only)
+app.get("/api/scores/analytics", verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, "scores.xlsx");
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "No scores found" });
+    }
+
+    const workbook = xlsx.readFile(filePath);
+    const worksheet = workbook.Sheets["Scores"];
+    const scores = xlsx.utils.sheet_to_json(worksheet);
+
+    const getPercent = (s) => {
+      const val = s["Percentage"] || s["__EMPTY"] || 0;
+      const num = parseFloat(String(val).replace('%',''));
+      return isNaN(num) ? 0 : num;
+    };
+
+    // Overall analytics
+    const analytics = {
+      totalTests: scores.length,
+      totalStudents: [...new Set(scores.map(s => s.Username))].length,
+      averageScore: scores.length > 0 
+        ? (scores.reduce((sum, s) => sum + getPercent(s), 0) / scores.length).toFixed(2)
+        : 0,
+      passRate: scores.length > 0 
+        ? ((scores.filter(s => (s.Status || s["__EMPTY_7"]) === "Pass").length / scores.length) * 100).toFixed(2)
+        : 0,
+      recentScores: scores.slice(-10) // Last 10 scores
+    };
+
+    res.status(200).json(analytics);
+  } catch (err) {
+    console.error("Error fetching score analytics:", err);
+    res.status(500).json({ error: "Failed to fetch score analytics" });
+  }
+});
+
 
 // Class Routes
 const classRoutes = require("./routes/classRoutes");
@@ -451,6 +643,10 @@ app.use("/api/subjects", subjectRoutes);
 /* ================================
    Start the Server
 ================================ */
+app.get('/api/ping', (req, res) => {
+  res.json({ message: 'pong' });
+});
+
 app.listen(PORT, () => {
   console.log(`Question Bank backend is running on http://localhost:${PORT}`);
 });
