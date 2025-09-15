@@ -357,7 +357,7 @@ app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, re
     // Save questions to the database
     const savedQuestions = [];
     for (const q of questionsArray) {
-      if (!q.text || !q.options || q.options.length < 2 || !q.answer || !q.classId) {
+      if (!q.text || !q.options || q.options.length < 2 || !q.answer || !q.classId || !q.subjectId) {
         continue; // Skip invalid
       }
       const newQuestion = new Question({
@@ -365,7 +365,8 @@ app.post('/api/bank/questions/upload', verifyToken, requireAdmin, async (req, re
         options: q.options.map((opt) => (typeof opt === 'string' ? opt.trim() : String(opt || '').trim())),
         answer: typeof q.answer === 'string' ? q.answer.trim() : String(q.answer || '').trim(),
         topic: q.topic ? (typeof q.topic === 'string' ? q.topic.trim() : String(q.topic).trim()) : "General",
-        classId: q.classId
+        classId: q.classId,
+        subjectId: q.subjectId
       });
       const savedQuestion = await newQuestion.save();
       savedQuestions.push(savedQuestion);

@@ -24,9 +24,15 @@ question-bank-frontend/project_name/dist/
 # Backend runtime/logs
 backend-bank/server.out.log
 backend-bank/server.err.log
+**/server.out.log
+**/server.err.log
 
 # Data files not for VCS
 backend-bank/scores.xlsx
+**/scores.xlsx
+
+# Ignore stray duplicate backend subtree if present
+backend-bank/backend-bank/
 
 # OS
 .DS_Store
