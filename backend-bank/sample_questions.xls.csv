@@ -1,0 +1,3 @@
+text,option1,option2,option3,option4,answer,topic,classId,subjectId
+What is 2+2?,2,3,4,5,4,Math,CLASS_ID_HERE,SUBJECT_ID_HERE
+What is the capital of France?,London,Paris,Berlin,Rome,Paris,Geography,CLASS_ID_HERE,SUBJECT_ID_HERE

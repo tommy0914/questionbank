@@ -1,0 +1,40 @@
+# Node
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env files
+.env
+**/.env
+*.env.local
+*.env.*.local
+
+# Build outputs
+build/
+dist/
+**/dist/
+.cache/
+
+# Frontend outputs
+question-bank-frontend/project_name/dist/
+
+# Backend runtime/logs
+backend-bank/server.out.log
+backend-bank/server.err.log
+**/server.out.log
+**/server.err.log
+
+# Data files not for VCS
+backend-bank/scores.xlsx
+**/scores.xlsx
+
+# Ignore stray duplicate backend subtree if present
+backend-bank/backend-bank/
+
+# OS
+.DS_Store
+Thumbs.db
+
